@@ -99,10 +99,29 @@ else
 fi
 
 # ============================================================
-# ONBOARD (only if no config exists yet)
+# ONBOARD (only if no config exists yet, or provider changed)
 # ============================================================
+NEED_ONBOARD=false
+
 if [ ! -f "$CONFIG_FILE" ]; then
-    echo "No existing config found, running openclaw onboard..."
+    NEED_ONBOARD=true
+    echo "No existing config found, will run onboard"
+elif [ "$FORCE_REONBOARD" = "true" ]; then
+    NEED_ONBOARD=true
+    echo "FORCE_REONBOARD=true, deleting old config"
+    rm -f "$CONFIG_FILE"
+elif [ -n "$GEMINI_API_KEY" ] && ! grep -q "gemini" "$CONFIG_FILE" 2>/dev/null; then
+    NEED_ONBOARD=true
+    echo "GEMINI_API_KEY set but config doesn't use Gemini, re-onboarding"
+    rm -f "$CONFIG_FILE"
+elif [ -n "$OPENAI_API_KEY" ] && ! grep -q "openai" "$CONFIG_FILE" 2>/dev/null; then
+    NEED_ONBOARD=true
+    echo "OPENAI_API_KEY set but config doesn't use OpenAI, re-onboarding"
+    rm -f "$CONFIG_FILE"
+fi
+
+if [ "$NEED_ONBOARD" = "true" ]; then
+    echo "Running openclaw onboard..."
 
     AUTH_ARGS=""
     if [ -n "$GEMINI_API_KEY" ]; then
