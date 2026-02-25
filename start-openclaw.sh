@@ -105,7 +105,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
     echo "No existing config found, running openclaw onboard..."
 
     AUTH_ARGS=""
-    if [ -n "$CLOUDFLARE_AI_GATEWAY_API_KEY" ] && [ -n "$CF_AI_GATEWAY_ACCOUNT_ID" ] && [ -n "$CF_AI_GATEWAY_GATEWAY_ID" ]; then
+    if [ -n "$GEMINI_API_KEY" ]; then
+        AUTH_ARGS="--auth-choice gemini-api-key --gemini-api-key $GEMINI_API_KEY"
+    elif [ -n "$CLOUDFLARE_AI_GATEWAY_API_KEY" ] && [ -n "$CF_AI_GATEWAY_ACCOUNT_ID" ] && [ -n "$CF_AI_GATEWAY_GATEWAY_ID" ]; then
         AUTH_ARGS="--auth-choice cloudflare-ai-gateway-api-key \
             --cloudflare-ai-gateway-account-id $CF_AI_GATEWAY_ACCOUNT_ID \
             --cloudflare-ai-gateway-gateway-id $CF_AI_GATEWAY_GATEWAY_ID \
@@ -217,31 +219,6 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     } else {
         console.warn('CF_AI_GATEWAY_MODEL set but missing required config (account ID, gateway ID, or API key)');
     }
-}
-
-// OpenAI base URL override (for Gemini OpenAI-compat, Azure, etc.)
-if (process.env.OPENAI_BASE_URL) {
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
-    // Patch existing openai provider or create one
-    const openaiProvider = config.models.providers['openai'] || config.models.providers['openai-default'] || {};
-    const providerKey = config.models.providers['openai'] ? 'openai' : 'openai-default';
-    openaiProvider.baseUrl = process.env.OPENAI_BASE_URL;
-    if (process.env.OPENAI_API_KEY) {
-        openaiProvider.apiKey = process.env.OPENAI_API_KEY;
-    }
-    openaiProvider.api = openaiProvider.api || 'openai-completions';
-    // Add a default model for Gemini if using generativelanguage URL
-    if (process.env.OPENAI_BASE_URL.includes('generativelanguage.googleapis.com') && !openaiProvider.models) {
-        openaiProvider.models = [
-            { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', contextWindow: 1048576, maxTokens: 8192 },
-        ];
-        config.agents = config.agents || {};
-        config.agents.defaults = config.agents.defaults || {};
-        config.agents.defaults.model = { primary: providerKey + '/gemini-2.0-flash' };
-    }
-    config.models.providers[providerKey] = openaiProvider;
-    console.log('OpenAI base URL override: ' + process.env.OPENAI_BASE_URL + ' (provider: ' + providerKey + ')');
 }
 
 // Telegram configuration
