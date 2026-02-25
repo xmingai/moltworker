@@ -7,7 +7,13 @@
 # 4. Starts a background sync loop (rclone, watches for file changes)
 # 5. Starts the gateway
 
-set -e
+set -eo pipefail
+trap 'echo "[ERROR] Script failed at line $LINENO with exit code $?"' ERR
+
+echo "=== OpenClaw Container Start ==="
+echo "Node: $(node --version)"
+echo "OpenClaw: $(openclaw --version 2>/dev/null || echo 'unknown')"
+echo "Date: $(date -Iseconds)"
 
 if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
     echo "OpenClaw gateway is already running, exiting."
@@ -340,6 +346,10 @@ rm -f /tmp/openclaw-gateway.lock 2>/dev/null || true
 rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
 
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
+echo "Gateway token set: $([ -n "$OPENCLAW_GATEWAY_TOKEN" ] && echo 'yes' || echo 'no')"
+echo "Config file contents:"
+cat "$CONFIG_FILE" 2>/dev/null | head -5 || echo "(no config file)"
+echo "---"
 
 if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
     echo "Starting gateway with token auth..."
