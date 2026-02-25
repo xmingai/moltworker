@@ -219,6 +219,31 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     }
 }
 
+// OpenAI base URL override (for Gemini OpenAI-compat, Azure, etc.)
+if (process.env.OPENAI_BASE_URL) {
+    config.models = config.models || {};
+    config.models.providers = config.models.providers || {};
+    // Patch existing openai provider or create one
+    const openaiProvider = config.models.providers['openai'] || config.models.providers['openai-default'] || {};
+    const providerKey = config.models.providers['openai'] ? 'openai' : 'openai-default';
+    openaiProvider.baseUrl = process.env.OPENAI_BASE_URL;
+    if (process.env.OPENAI_API_KEY) {
+        openaiProvider.apiKey = process.env.OPENAI_API_KEY;
+    }
+    openaiProvider.api = openaiProvider.api || 'openai-completions';
+    // Add a default model for Gemini if using generativelanguage URL
+    if (process.env.OPENAI_BASE_URL.includes('generativelanguage.googleapis.com') && !openaiProvider.models) {
+        openaiProvider.models = [
+            { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', contextWindow: 1048576, maxTokens: 8192 },
+        ];
+        config.agents = config.agents || {};
+        config.agents.defaults = config.agents.defaults || {};
+        config.agents.defaults.model = { primary: providerKey + '/gemini-2.0-flash' };
+    }
+    config.models.providers[providerKey] = openaiProvider;
+    console.log('OpenAI base URL override: ' + process.env.OPENAI_BASE_URL + ' (provider: ' + providerKey + ')');
+}
+
 // Telegram configuration
 // Overwrite entire channel object to drop stale keys from old R2 backups
 // that would fail OpenClaw's strict config validation (see #47)
