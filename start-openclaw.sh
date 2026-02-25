@@ -105,54 +105,89 @@ else
 fi
 
 # ============================================================
-# ONBOARD (only if no config exists yet, or provider changed)
+# CONFIG GENERATION (bypasses openclaw onboard for reliability)
 # ============================================================
-NEED_ONBOARD=false
+# Instead of relying on `openclaw onboard` CLI flags (which vary
+# across versions), we generate openclaw.json directly.
 
-if [ ! -f "$CONFIG_FILE" ]; then
-    NEED_ONBOARD=true
-    echo "No existing config found, will run onboard"
-elif [ "$FORCE_REONBOARD" = "true" ]; then
-    NEED_ONBOARD=true
-    echo "FORCE_REONBOARD=true, deleting old config"
-    rm -f "$CONFIG_FILE"
-elif [ -n "$GEMINI_API_KEY" ] && ! grep -q "gemini" "$CONFIG_FILE" 2>/dev/null; then
-    NEED_ONBOARD=true
-    echo "GEMINI_API_KEY set but config doesn't use Gemini, re-onboarding"
-    rm -f "$CONFIG_FILE"
-elif [ -n "$OPENAI_API_KEY" ] && ! grep -q "openai" "$CONFIG_FILE" 2>/dev/null; then
-    NEED_ONBOARD=true
-    echo "OPENAI_API_KEY set but config doesn't use OpenAI, re-onboarding"
-    rm -f "$CONFIG_FILE"
+if [ -f "$CONFIG_FILE" ]; then
+    # Check if provider changed
+    if [ -n "$GEMINI_API_KEY" ] && ! grep -q "gemini" "$CONFIG_FILE" 2>/dev/null; then
+        echo "GEMINI_API_KEY set but config doesn't use Gemini, regenerating config"
+        rm -f "$CONFIG_FILE"
+    elif [ "$FORCE_REONBOARD" = "true" ]; then
+        echo "FORCE_REONBOARD=true, regenerating config"
+        rm -f "$CONFIG_FILE"
+    fi
 fi
 
-if [ "$NEED_ONBOARD" = "true" ]; then
-    echo "Running openclaw onboard..."
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Generating openclaw.json config..."
 
-    AUTH_ARGS=""
-    if [ -n "$GEMINI_API_KEY" ]; then
-        AUTH_ARGS="--auth-choice gemini-api-key --gemini-api-key $GEMINI_API_KEY"
-    elif [ -n "$CLOUDFLARE_AI_GATEWAY_API_KEY" ] && [ -n "$CF_AI_GATEWAY_ACCOUNT_ID" ] && [ -n "$CF_AI_GATEWAY_GATEWAY_ID" ]; then
-        AUTH_ARGS="--auth-choice cloudflare-ai-gateway-api-key \
-            --cloudflare-ai-gateway-account-id $CF_AI_GATEWAY_ACCOUNT_ID \
-            --cloudflare-ai-gateway-gateway-id $CF_AI_GATEWAY_GATEWAY_ID \
-            --cloudflare-ai-gateway-api-key $CLOUDFLARE_AI_GATEWAY_API_KEY"
-    elif [ -n "$ANTHROPIC_API_KEY" ]; then
-        AUTH_ARGS="--auth-choice apiKey --anthropic-api-key $ANTHROPIC_API_KEY"
-    elif [ -n "$OPENAI_API_KEY" ]; then
-        AUTH_ARGS="--auth-choice openai-api-key --openai-api-key $OPENAI_API_KEY"
-    fi
+    node -e '
+const fs = require("fs");
+const config = {
+    gateway: {
+        port: 18789,
+        mode: "local",
+        bind: "lan",
+        trustedProxies: ["10.1.0.0"],
+        auth: {}
+    },
+    models: {
+        providers: {}
+    },
+    agents: {
+        defaults: {}
+    },
+    channels: {}
+};
 
-    openclaw onboard --non-interactive --accept-risk \
-        --mode local \
-        $AUTH_ARGS \
-        --gateway-port 18789 \
-        --gateway-bind lan \
-        --skip-channels \
-        --skip-skills \
-        --skip-health
+// Provider configuration
+if (process.env.GEMINI_API_KEY) {
+    config.models.providers["google-gemini"] = {
+        api: "google-gemini",
+        apiKey: process.env.GEMINI_API_KEY
+    };
+    config.agents.defaults.model = { primary: "google-gemini/gemini-2.0-flash" };
+    console.log("Provider: google-gemini");
+} else if (process.env.ANTHROPIC_API_KEY) {
+    config.models.providers["anthropic"] = {
+        api: "anthropic-messages",
+        apiKey: process.env.ANTHROPIC_API_KEY
+    };
+    if (process.env.ANTHROPIC_BASE_URL) {
+        config.models.providers["anthropic"].baseUrl = process.env.ANTHROPIC_BASE_URL;
+    }
+    config.agents.defaults.model = { primary: "anthropic/claude-sonnet-4-20250514" };
+    console.log("Provider: anthropic");
+} else if (process.env.OPENAI_API_KEY) {
+    config.models.providers["openai"] = {
+        api: "openai-completions",
+        apiKey: process.env.OPENAI_API_KEY
+    };
+    config.agents.defaults.model = { primary: "openai/gpt-4o" };
+    console.log("Provider: openai");
+} else {
+    console.error("ERROR: No AI provider key found!");
+    process.exit(1);
+}
 
-    echo "Onboard completed"
+// Gateway token
+if (process.env.OPENCLAW_GATEWAY_TOKEN) {
+    config.gateway.auth.token = process.env.OPENCLAW_GATEWAY_TOKEN;
+}
+
+// Dev mode
+if (process.env.OPENCLAW_DEV_MODE === "true") {
+    config.gateway.controlUi = { allowInsecureAuth: true };
+}
+
+fs.writeFileSync("/root/.openclaw/openclaw.json", JSON.stringify(config, null, 2));
+console.log("Config written to /root/.openclaw/openclaw.json");
+'
+
+    echo "Config generation completed"
 else
     echo "Using existing config"
 fi
