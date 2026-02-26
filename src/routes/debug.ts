@@ -386,4 +386,115 @@ debug.get('/container-config', async (c) => {
   }
 });
 
+// POST /debug/fix-config - Generate correct config from Worker env vars and write to container
+// This bridges the gap where debug/cli doesn't have Worker env vars
+debug.get('/fix-config', async (c) => {
+  const sandbox = c.get('sandbox');
+  const restart = c.req.query('restart') !== 'false';
+
+  try {
+    // Build config from Worker env vars
+    const config: Record<string, unknown> = {
+      gateway: {
+        port: 18789,
+        mode: 'local',
+        bind: 'lan',
+        trustedProxies: ['10.1.0.0'],
+        auth: {} as Record<string, unknown>,
+        controlUi: { allowInsecureAuth: c.env.DEV_MODE === 'true' },
+      },
+      models: { providers: {} as Record<string, unknown> },
+      agents: { defaults: {} as Record<string, unknown> },
+      channels: {},
+    };
+
+    // Gateway token
+    if (c.env.MOLTBOT_GATEWAY_TOKEN) {
+      (config.gateway as Record<string, unknown>).auth = { token: c.env.MOLTBOT_GATEWAY_TOKEN };
+    }
+
+    // Provider config
+    let providerName = 'none';
+    const providers = (config.models as Record<string, unknown>).providers as Record<string, unknown>;
+
+    if (c.env.GEMINI_API_KEY) {
+      providers['google-gemini'] = {
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+        api: 'openai-completions',
+        apiKey: c.env.GEMINI_API_KEY,
+        models: [
+          { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', contextWindow: 1048576, maxTokens: 8192 },
+          { id: 'gemini-2.5-flash-preview-05-20', name: 'Gemini 2.5 Flash', contextWindow: 1048576, maxTokens: 65536 },
+        ],
+      };
+      (config.agents as Record<string, unknown>).defaults = { model: { primary: 'google-gemini/gemini-2.0-flash' } };
+      providerName = 'google-gemini';
+    } else if (c.env.ANTHROPIC_API_KEY) {
+      providers['anthropic'] = {
+        api: 'anthropic-messages',
+        apiKey: c.env.ANTHROPIC_API_KEY,
+        baseUrl: c.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
+        models: [{ id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet', contextWindow: 200000, maxTokens: 8192 }],
+      };
+      (config.agents as Record<string, unknown>).defaults = { model: { primary: 'anthropic/claude-sonnet-4-20250514' } };
+      providerName = 'anthropic';
+    } else if (c.env.OPENAI_API_KEY) {
+      providers['openai'] = {
+        api: 'openai-completions',
+        apiKey: c.env.OPENAI_API_KEY,
+        baseUrl: 'https://api.openai.com/v1',
+        models: [{ id: 'gpt-4o', name: 'GPT-4o', contextWindow: 128000, maxTokens: 4096 }],
+      };
+      (config.agents as Record<string, unknown>).defaults = { model: { primary: 'openai/gpt-4o' } };
+      providerName = 'openai';
+    } else {
+      return c.json({ error: 'No AI provider key found in Worker env (GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY)' }, 400);
+    }
+
+    // Write config to container
+    const configJson = JSON.stringify(config, null, 2);
+    const writeCmd = `cat > /root/.openclaw/openclaw.json << 'CONFIGEOF'\n${configJson}\nCONFIGEOF`;
+    const writeProc = await sandbox.startProcess(writeCmd);
+    await waitForProcess(writeProc, 5000);
+    const writeLogs = await writeProc.getLogs();
+
+    const result: Record<string, unknown> = {
+      provider: providerName,
+      configWritten: true,
+      writeStderr: writeLogs.stderr || '',
+    };
+
+    // Optionally restart gateway
+    if (restart) {
+      // Kill existing gateway
+      const killProc = await sandbox.startProcess('pkill -f "openclaw gateway" || true');
+      await waitForProcess(killProc, 5000);
+      await new Promise((r) => setTimeout(r, 1000));
+
+      // Start gateway with env vars
+      const { buildEnvVars } = await import('../gateway/env');
+      const envVars = buildEnvVars(c.env);
+      const envString = Object.entries(envVars)
+        .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+        .join(' ');
+
+      const gwCmd = `${envString} openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token ${JSON.stringify(c.env.MOLTBOT_GATEWAY_TOKEN || '')}`;
+      const gwProc = await sandbox.startProcess(gwCmd);
+
+      // Wait a bit to see if it crashes immediately
+      await new Promise((r) => setTimeout(r, 5000));
+      const gwLogs = await gwProc.getLogs();
+      result.gatewayRestarted = true;
+      result.gatewayStatus = gwProc.status;
+      result.gatewayStdout = (gwLogs.stdout || '').slice(-500);
+      result.gatewayStderr = (gwLogs.stderr || '').slice(-500);
+    }
+
+    return c.json(result);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
 export { debug };
