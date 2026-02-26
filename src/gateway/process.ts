@@ -3,6 +3,90 @@ import type { MoltbotEnv } from '../types';
 import { MOLTBOT_PORT, STARTUP_TIMEOUT_MS } from '../config';
 import { buildEnvVars } from './env';
 import { ensureRcloneConfig } from './r2';
+import { waitForProcess } from './utils';
+
+/**
+ * Pre-seed openclaw.json config into the container.
+ * This runs BEFORE start-openclaw.sh so the script finds an existing config
+ * and skips its broken `openclaw onboard` command.
+ */
+async function preseedOpenClawConfig(sandbox: Sandbox, env: MoltbotEnv): Promise<void> {
+  console.log('[Config] Pre-seeding openclaw.json...');
+
+  // Build provider config based on available keys
+  let providerConfig: Record<string, unknown> = {};
+  let defaultModel = '';
+
+  if (env.GEMINI_API_KEY) {
+    providerConfig = {
+      'google-gemini': {
+        baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+        api: 'openai-completions',
+        apiKey: env.GEMINI_API_KEY,
+        models: [
+          { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', contextWindow: 1048576, maxTokens: 8192 },
+          { id: 'gemini-2.5-flash-preview-05-20', name: 'Gemini 2.5 Flash', contextWindow: 1048576, maxTokens: 65536 },
+        ],
+      },
+    };
+    defaultModel = 'google-gemini/gemini-2.0-flash';
+  } else if (env.ANTHROPIC_API_KEY) {
+    providerConfig = {
+      anthropic: {
+        api: 'anthropic-messages',
+        apiKey: env.ANTHROPIC_API_KEY,
+        baseUrl: env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
+        models: [{ id: 'claude-sonnet-4-20250514', name: 'Claude Sonnet', contextWindow: 200000, maxTokens: 8192 }],
+      },
+    };
+    defaultModel = 'anthropic/claude-sonnet-4-20250514';
+  } else if (env.OPENAI_API_KEY) {
+    providerConfig = {
+      openai: {
+        api: 'openai-completions',
+        apiKey: env.OPENAI_API_KEY,
+        baseUrl: 'https://api.openai.com/v1',
+        models: [{ id: 'gpt-4o', name: 'GPT-4o', contextWindow: 128000, maxTokens: 4096 }],
+      },
+    };
+    defaultModel = 'openai/gpt-4o';
+  } else {
+    console.log('[Config] No provider key found, skipping pre-seed');
+    return;
+  }
+
+  const gatewayToken = env.MOLTBOT_GATEWAY_TOKEN || '';
+  const config = {
+    gateway: {
+      port: MOLTBOT_PORT,
+      mode: 'local',
+      bind: 'lan',
+      trustedProxies: ['10.1.0.0'],
+      auth: gatewayToken ? { token: gatewayToken } : {},
+      controlUi: { allowInsecureAuth: env.DEV_MODE === 'true' },
+    },
+    models: { providers: providerConfig },
+    agents: { defaults: { model: defaultModel ? { primary: defaultModel } : {} } },
+    channels: {},
+  };
+
+  const configJson = JSON.stringify(config, null, 2);
+
+  // Write config to container via heredoc
+  const writeCmd = `mkdir -p /root/.openclaw && cat > /root/.openclaw/openclaw.json << 'CONFIGEOF'\n${configJson}\nCONFIGEOF`;
+  try {
+    const proc = await sandbox.startProcess(writeCmd);
+    await waitForProcess(proc, 5000);
+    const logs = await proc.getLogs();
+    if (logs.stderr) {
+      console.error('[Config] Write stderr:', logs.stderr);
+    }
+    console.log('[Config] Pre-seeded config with provider:', Object.keys(providerConfig)[0]);
+  } catch (e) {
+    console.error('[Config] Failed to pre-seed config:', e);
+    // Don't throw — let start-openclaw.sh try its own config generation
+  }
+}
 
 /**
  * Find an existing OpenClaw gateway process
@@ -91,6 +175,13 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
   // Start a new OpenClaw gateway
   console.log('Starting new OpenClaw gateway...');
   const envVars = buildEnvVars(env);
+
+  // Pre-seed openclaw.json before start-openclaw.sh runs.
+  // This bypasses the shell script's `openclaw onboard` command (which has
+  // version-specific CLI flags) by writing a valid config directly.
+  // The old script will find the existing config and skip onboard.
+  await preseedOpenClawConfig(sandbox, env);
+
   const command = '/usr/local/bin/start-openclaw.sh';
 
   console.log('Starting process with command:', command);
