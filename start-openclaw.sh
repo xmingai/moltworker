@@ -146,8 +146,13 @@ const config = {
 // Provider configuration
 if (process.env.GEMINI_API_KEY) {
     config.models.providers["google-gemini"] = {
-        api: "google-gemini",
-        apiKey: process.env.GEMINI_API_KEY
+        baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
+        api: "openai-completions",
+        apiKey: process.env.GEMINI_API_KEY,
+        models: [
+            { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", contextWindow: 1048576, maxTokens: 8192 },
+            { id: "gemini-2.5-flash-preview-05-20", name: "Gemini 2.5 Flash", contextWindow: 1048576, maxTokens: 65536 }
+        ]
     };
     config.agents.defaults.model = { primary: "google-gemini/gemini-2.0-flash" };
     console.log("Provider: google-gemini");
