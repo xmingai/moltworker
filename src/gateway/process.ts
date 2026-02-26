@@ -70,10 +70,11 @@ async function preseedOpenClawConfig(sandbox: Sandbox, env: MoltbotEnv): Promise
     channels: {},
   };
 
-  const configJson = JSON.stringify(config, null, 2);
+  const configJson = JSON.stringify(config);
 
-  // Write config to container via heredoc
-  const writeCmd = `mkdir -p /root/.openclaw && cat > /root/.openclaw/openclaw.json << 'CONFIGEOF'\n${configJson}\nCONFIGEOF`;
+  // Write config to container via node -e (heredoc hangs in sandbox.startProcess)
+  const escaped = configJson.replace(/'/g, "'\\''");
+  const writeCmd = `mkdir -p /root/.openclaw && node -e 'require("fs").writeFileSync("/root/.openclaw/openclaw.json", JSON.stringify(JSON.parse(process.argv[1]), null, 2))' '${escaped}'`;
   try {
     const proc = await sandbox.startProcess(writeCmd);
     await waitForProcess(proc, 5000);
